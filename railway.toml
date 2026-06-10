@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.collector"
+
+[deploy]
+startCommand = "python /app/b3_data_collector.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

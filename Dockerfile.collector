@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    B3_DATA_DIR=/data/b3_lake
+
+WORKDIR /app
+
+COPY requirements-collector.txt /app/requirements-collector.txt
+RUN pip install -r /app/requirements-collector.txt
+
+COPY b3_data_collector.py /app/b3_data_collector.py
+
+CMD ["python", "/app/b3_data_collector.py"]

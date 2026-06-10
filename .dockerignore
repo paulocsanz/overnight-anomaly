@@ -1,0 +1,14 @@
+.git
+.gitignore
+.dockerignore
+README.md
+*.md
+/data
+/collector_smoke
+/__pycache__
+/.claude
+.env
+.env.*
+*.parquet
+*.csv
+*.jsonl

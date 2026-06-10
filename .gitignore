@@ -1,0 +1,22 @@
+# local/generated data
+/data/
+/collector_smoke/
+/__pycache__/
+*.py[cod]
+*.parquet
+*.csv
+*.jsonl
+
+# local agent/settings
+/.claude/settings.local.json
+/.claude/scheduled_tasks.lock
+
+# env/secrets
+.env
+.env.*
+!.env.example
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
