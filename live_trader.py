@@ -29,7 +29,11 @@ SIMULATED_ACCOUNT_INITIAL = 100_000
 
 # Trading parameters
 RISK_PER_TRADE = 0.01  # 1% of account per position
-MIN_GAP_PCT = 2.0  # Only trade gaps >2%
+MIN_GAP_PCT = 12.0  # Recent edge only survives on true shock gaps.
+MIN_ADV20_REAIS = 1_000_000
+VOLATILITY_MULTIPLE = 3.0
+MIN_PREV_CLOSE = 2.0
+SLIPPAGE_PCT = 0.10  # Wider B3 gap-open impact estimate, per side.
 COMMISSION_PCT = 0.05
 TAX_RATE = 0.20
 
@@ -128,51 +132,75 @@ class TradingAccount:
 
 
 def load_today_data() -> pd.DataFrame:
-    """Load today's data from collector."""
-    try:
-        df = pd.read_parquet(TRADING_DIR / "liquidity_filtered_with_metrics.parquet")
-        today = datetime.now().date()
-        today_data = df[df["date"] == today]
-        if not today_data.empty:
-            return today_data
-    except FileNotFoundError:
-        pass
+    """Load market data. Needs recent history to compute trailing filters."""
+    for path in [
+        TRADING_DIR / "liquidity_filtered_with_metrics.parquet",
+        Path(DATA_DIR) / "analysis" / "liquidity_filtered_with_metrics.parquet",
+    ]:
+        try:
+            return pd.read_parquet(path)
+        except FileNotFoundError:
+            continue
 
-    # Fallback: use recent data for backtesting (last 30 days)
-    try:
-        df = pd.read_parquet(Path(DATA_DIR) / "analysis" / "liquidity_filtered_with_metrics.parquet")
-        return df.sort_values("date").tail(500)  # Last ~2 months of data
-    except FileNotFoundError:
-        print("ERROR: No data available. Run analysis_overnight_anomaly.py first.")
-        raise
+    print("ERROR: No data available. Run analysis_overnight_anomaly.py first.")
+    raise FileNotFoundError("liquidity_filtered_with_metrics.parquet")
 
 
 def generate_signals(df: pd.DataFrame, ticker_universe: list[str] = None) -> list[dict]:
-    """Generate gap reversal signals for today."""
-    if ticker_universe is None:
-        # Use stocks that still have 2%+ gaps
-        ticker_universe = ["INEP4", "INEP3", "MGEL4", "TELB3", "MNDL3",
-                          "MNPR3", "DOTZ3", "PTNT3", "PDGR3", "EUCA3",
-                          "TELB4", "IFCM3", "PLAS3", "AZEV3", "SEQL3"]
+    """Generate shock-gap reversal signals for the latest available date.
+
+    Uses only trailing liquidity/range filters. Live execution still requires:
+    - news/corporate-action check
+    - volatility-auction check
+    - borrow availability for gap-up shorts
+    - opening-range/VWAP failure confirmation before entry
+    """
+    df = df.copy().sort_values(["codneg", "date"])
+    if ticker_universe is not None:
+        df = df[df["codneg"].isin(ticker_universe)]
+
+    grouped = df.groupby("codneg", group_keys=False)
+    df["adv20_reais"] = grouped["voltot"].transform(lambda x: x.rolling(20, min_periods=10).mean().shift(1))
+    df["range20_pct"] = grouped["intraday_range_pct"].transform(
+        lambda x: x.rolling(20, min_periods=10).mean().shift(1)
+    )
+
+    latest_date = df["date"].max()
+    latest = df[df["date"] == latest_date].copy()
+    eligible = (
+        (latest["prev_close"] >= MIN_PREV_CLOSE)
+        & (latest["adv20_reais"] >= MIN_ADV20_REAIS)
+        & (latest["gap_pct"].abs() >= MIN_GAP_PCT)
+        & (latest["gap_pct"].abs() >= VOLATILITY_MULTIPLE * latest["range20_pct"].clip(lower=1.0))
+        & latest["preabe"].gt(0)
+        & latest["preuln"].gt(0)
+        & latest["premax"].gt(latest["premin"])
+    )
 
     signals = []
-    for ticker in ticker_universe:
-        ticker_data = df[df["codneg"] == ticker]
-        if ticker_data.empty:
-            continue
+    slip = SLIPPAGE_PCT / 100
+    for _, row in latest[eligible].iterrows():
+        signal_side = -1 if row["gap_pct"] > 0 else 1
+        if signal_side == 1:
+            entry_price = row["preabe"] * (1 + slip)
+            exit_price = row["preuln"] * (1 - slip)
+            priority = "paper_only_long_gap_down"
+        else:
+            entry_price = row["preabe"] * (1 - slip)
+            exit_price = row["preuln"] * (1 + slip)
+            priority = "high_if_borrow_available"
 
-        row = ticker_data.iloc[-1]
-
-        if abs(row["gap_pct"]) > MIN_GAP_PCT:
-            signal = {
-                "ticker": ticker,
-                "gap_pct": row["gap_pct"],
-                "entry_price": row["preabe"],
-                "exit_price": row["preuln"],
-                "date": row["date"],
-                "signal": -1 if row["gap_pct"] > 0 else 1,  # Short gaps up, long gaps down
-            }
-            signals.append(signal)
+        signals.append({
+            "ticker": row["codneg"],
+            "gap_pct": row["gap_pct"],
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "date": row["date"],
+            "signal": signal_side,
+            "adv20_reais": row["adv20_reais"],
+            "range20_pct": row["range20_pct"],
+            "priority": priority,
+        })
 
     return signals
 
@@ -234,10 +262,11 @@ def main():
     df = load_today_data()
     signals = generate_signals(df)
 
-    print(f"Generated {len(signals)} gap reversal signals for today")
+    print(f"Generated {len(signals)} shock-gap reversal signals for latest date")
+    print(f"Filters: |gap| >= {MIN_GAP_PCT:.0f}%, ADV20 >= R${MIN_ADV20_REAIS:,.0f}, |gap| >= {VOLATILITY_MULTIPLE:.1f}x range20")
 
     if not signals:
-        print("No tradeable gaps found today.")
+        print("No tradeable shock gaps found.")
         return
 
     # Execute trades
@@ -256,7 +285,8 @@ def main():
 
         pnl = real_account.trades[-1]["pnl"]
         ret = real_account.trades[-1]["net_return_pct"]
-        print(f"  {signal['ticker']:6s} gap={signal['gap_pct']:+6.2f}% → "
+        print(f"  {signal['ticker']:6s} gap={signal['gap_pct']:+6.2f}% "
+              f"range20={signal['range20_pct']:.2f}% {signal['priority']} → "
               f"return={ret:+6.3f}% → PnL=R${pnl:+8.2f}")
 
     # Daily summary

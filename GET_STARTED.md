@@ -20,9 +20,13 @@ Cost: R$1,000 capital
 
 ### Day 3-7: Run Backtests & Paper Trade
 ```bash
-# 1. Run the analysis to confirm signals
+# 1. Run analysis + full backtests for every strategy
 python analysis_overnight_anomaly.py
-# Wait for: data/analysis/strategy_results.json
+# Wait for:
+#   data/analysis/strategy_results.json
+#   data/analysis/backtest_results.json
+#   data/analysis/backtest_trades.parquet
+#   data/analysis/backtest_equity_curves.parquet
 
 # 2. Run the live trader (backtesting on recent data)
 python live_trader.py

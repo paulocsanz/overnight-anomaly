@@ -8,7 +8,12 @@ Multi-theory platform for testing trading strategies against 40 years of B3 hist
 python analysis_overnight_anomaly.py
 ```
 
-This runs all registered strategies and outputs results to `data/analysis/strategy_results.json`.
+This runs all registered strategy analyses **and then automatically backtests every registered strategy**. Outputs:
+
+- `data/analysis/strategy_results.json` — analysis summaries plus backtest status
+- `data/analysis/backtest_results.json` — per-strategy backtest metrics
+- `data/analysis/backtest_trades.parquet` — full trade-level backtest data
+- `data/analysis/backtest_equity_curves.parquet` — per-strategy equity curves
 
 ## Current Strategies Implemented
 
@@ -112,10 +117,15 @@ analysis_overnight_anomaly.py
     ├→ Load & concat all years
     ├→ Filter liquid stocks (avg daily volume > R$100k, 252+ trading days)
     ├→ Compute metrics (gaps, returns, volume ratios, etc.)
-    └→ Run all strategy tests
+    ├→ Run all strategy tests
+    ├→ Run backtests for every registered strategy
+    └→ Persist trade-level and equity-curve data
     ↓
 /data/analysis/
-    ├→ strategy_results.json (summaries)
+    ├→ strategy_results.json (summaries + backtest status)
+    ├→ backtest_results.json (per-strategy backtest metrics)
+    ├→ backtest_trades.parquet (full trade-level backtest data)
+    ├→ backtest_equity_curves.parquet (daily equity curves)
     └→ liquidity_filtered_with_metrics.parquet (full data for custom analysis)
 ```
 

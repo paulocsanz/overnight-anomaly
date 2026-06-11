@@ -1,0 +1,15 @@
+FROM rust:1.75
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y postgresql-client && rm -rf /var/lib/apt/lists/*
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+COPY migrations ./migrations
+
+RUN cargo check
+
+EXPOSE 8000
+
+CMD ["cargo", "run"]

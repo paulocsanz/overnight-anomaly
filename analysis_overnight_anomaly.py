@@ -134,15 +134,16 @@ def test_volume_anomaly(df: pd.DataFrame) -> dict:
 
 def test_mean_reversion(df: pd.DataFrame) -> dict:
     """Test: After extreme moves, do prices revert?"""
-    valid = df[["daily_ret_pct", "close_to_close_ret"]].dropna()
+    valid = df[["codneg", "daily_ret_pct", "close_to_close_ret"]].dropna().copy()
+    valid["next_close_to_close_ret"] = valid.groupby("codneg")["close_to_close_ret"].shift(-1)
 
     # Extreme down days
     extreme_down = valid[valid["daily_ret_pct"] < valid["daily_ret_pct"].quantile(0.10)]
-    next_ret_after_down = extreme_down.groupby(extreme_down.index)["close_to_close_ret"].shift(-1)
+    next_ret_after_down = extreme_down["next_close_to_close_ret"].dropna()
 
     # Extreme up days
     extreme_up = valid[valid["daily_ret_pct"] > valid["daily_ret_pct"].quantile(0.90)]
-    next_ret_after_up = extreme_up.groupby(extreme_up.index)["close_to_close_ret"].shift(-1)
+    next_ret_after_up = extreme_up["next_close_to_close_ret"].dropna()
 
     return {
         "strategy": "mean_reversion",
@@ -249,9 +250,34 @@ def main():
     print(f"   Low vol days return std: {result['low_vol_return_std']:.3f}%")
     strategies.append(result)
 
-    # Save results
+    # Save analysis dataset first; backtests run from the same data and also persist
+    # detailed trades/equity curves.
     output_dir = DATA_DIR / "analysis"
     output_dir.mkdir(parents=True, exist_ok=True)
+    metrics_file = output_dir / "liquidity_filtered_with_metrics.parquet"
+    df.to_parquet(metrics_file)
+
+    backtest_summary = None
+    backtest_error = None
+    try:
+        from backtest_strategies import run_backtests
+
+        backtest_summary = run_backtests(df=df, verbose=True)
+        analysis_strategy_names = {strategy["strategy"] for strategy in strategies}
+        backtested_names = set(backtest_summary.get("strategies_backtested", []))
+        missing_backtests = sorted(analysis_strategy_names - backtested_names)
+        failed_backtests = [
+            result.get("strategy")
+            for result in backtest_summary.get("results", [])
+            if result.get("strategy") in analysis_strategy_names
+            and (result.get("error") or result.get("trades", 0) <= 0)
+        ]
+        if missing_backtests:
+            raise RuntimeError(f"Missing backtests for strategies: {missing_backtests}")
+        if failed_backtests:
+            raise RuntimeError(f"Backtests produced no trades or errored: {failed_backtests}")
+    except Exception as exc:  # noqa: BLE001
+        backtest_error = repr(exc)
 
     results_summary = {
         "timestamp": datetime.now().isoformat(),
@@ -265,18 +291,32 @@ def main():
             }
         },
         "strategies": strategies,
+        "backtest": {
+            "status": "ok" if backtest_error is None else "error",
+            "error": backtest_error,
+            "results_file": str(output_dir / "backtest_results.json"),
+            "trades_file": str(output_dir / "backtest_trades.parquet"),
+            "equity_curves_file": str(output_dir / "backtest_equity_curves.parquet"),
+            "strategies_backtested": backtest_summary.get("strategies_backtested", []) if backtest_summary else [],
+            "total_trade_rows": backtest_summary.get("total_trade_rows", 0) if backtest_summary else 0,
+        },
     }
 
     with (output_dir / "strategy_results.json").open("w") as f:
         json.dump(results_summary, f, indent=2)
 
-    # Save full dataset for further analysis
-    df.to_parquet(output_dir / "liquidity_filtered_with_metrics.parquet")
-
     print("\n" + "="*80)
     print(f"✓ Results saved to {output_dir / 'strategy_results.json'}")
-    print(f"✓ Full data saved to {output_dir / 'liquidity_filtered_with_metrics.parquet'}")
+    print(f"✓ Full data saved to {metrics_file}")
+    if backtest_error is None:
+        print(f"✓ Backtest results saved to {output_dir / 'backtest_results.json'}")
+        print(f"✓ Backtest trades saved to {output_dir / 'backtest_trades.parquet'}")
+    else:
+        print(f"✗ Backtest failed: {backtest_error}")
     print("="*80)
+
+    if backtest_error is not None:
+        raise RuntimeError(f"Backtest failed: {backtest_error}")
 
 
 if __name__ == "__main__":
